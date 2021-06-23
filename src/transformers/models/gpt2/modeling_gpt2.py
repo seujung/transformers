@@ -121,6 +121,22 @@ def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
         pointer.data = torch.from_numpy(array)
     return model
 
+class LoRALayer(nn.Module):
+    def __init__(self, n_in, n_out=None, adapter_dim=16, adapter_alpha=32):
+        super(LoRALayer, self).__init__()
+        if not n_out:
+            n_out = n_in
+        self.adapter_dim = adapter_dim
+        self.adapter_alpha = adapter_alpha
+        self.adapter_proj_1 = nn.Linear(n_in, adapter_dim, bias=False)
+        nn.init.normal_(self.adapter_proj_1.weight, std=0.02)
+        self.adapter_proj_2 = nn.Linear(adapter_dim, n_out, bias=False)
+        self.adapter_proj_2.weight.data.zero_()
+
+    def forward(self, x):
+        scale_factor = self.adapter_dim / self.adapter_alpha
+        result = torch.matmul(x, self.adapter_proj_1.weight.type_as(x).T)
+        return torch.matmul(result, self.adapter_proj_2.weight.type_as(x).T) * scale_factor
 
 class GPT2Attention(nn.Module):
     def __init__(self, config, is_cross_attention=False):
@@ -158,6 +174,18 @@ class GPT2Attention(nn.Module):
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
 
         self.pruned_heads = set()
+
+        self.lora_attn_dim = config.lora_attn_dim 
+        self.lora_attn_alpha = config.lora_attn_alpha
+
+        if self.lora_attn_dim > 0:
+            pass
+            self.q_adapter = LoRALayer(config.hidden_size, adapter_dim=self.lora_attn_dim, adapter_alpha=self.lora_attn_alpha)
+            self.v_adapter = LoRALayer(config.hidden_size, adapter_dim=self.lora_attn_dim, adapter_alpha=self.lora_attn_alpha)
+        
+        self.lora_dropout = None
+        if config.lora_dropout > 0:
+            self.lora_dropout = nn.Dropout(config.lora_dropout)
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -241,9 +269,21 @@ class GPT2Attention(nn.Module):
         else:
             query, key, value = self.c_attn(hidden_states).split(self.split_size, dim=2)
 
+        if self.lora_attn_dim > 0:
+            lora_input = hidden_states
+            if self.lora_dropout is not None:
+                lora_input = self.lora_dropout(lora_input)
+            
+            query_delta = self.q_adapter(lora_input)
+            value_delta = self.v_adapter(lora_input)
+
+            query = query.contiguous() + query_delta
+            value = value.contiguous() + value_delta
+
         query = self._split_heads(query, self.num_heads, self.head_dim)
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
+
 
         if layer_past is not None:
             past_key, past_value = layer_past
