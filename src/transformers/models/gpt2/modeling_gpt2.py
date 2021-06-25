@@ -179,7 +179,6 @@ class GPT2Attention(nn.Module):
         self.lora_attn_alpha = config.lora_attn_alpha
 
         if self.lora_attn_dim > 0:
-            pass
             self.q_adapter = LoRALayer(config.hidden_size, adapter_dim=self.lora_attn_dim, adapter_alpha=self.lora_attn_alpha)
             self.v_adapter = LoRALayer(config.hidden_size, adapter_dim=self.lora_attn_dim, adapter_alpha=self.lora_attn_alpha)
         
